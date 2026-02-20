@@ -1,0 +1,45 @@
+name: Full translate (i18n + docs)
+
+on:
+  workflow_call:
+    inputs:
+      source_lang:
+        type: string
+        default: fr_FR
+      target_languages:
+        type: string
+        default: "en_US,de_DE,es_ES"
+    secrets:
+      DEEPL_API_KEY:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: i18n JSON (Mips)
+        uses: Mips2648/plugins-translations@v2
+        with:
+          deepl_api_key: ${{ secrets.DEEPL_API_KEY }}
+          target_languages: ${{ inputs.target_languages }}
+          source_language: ${{ inputs.source_lang }}
+
+      - name: Docs (DeepL)
+        uses: Zyg0m4t1k/jeedom-i18n-tools@main
+        with:
+          deepl_api_key: ${{ secrets.DEEPL_API_KEY }}
+          source_lang: ${{ inputs.source_lang }}
+
+      - name: PR docs if changes
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(docs): sync/translate"
+          title: "chore(docs): sync/translate"
+          branch: "bot/docs"
+          delete-branch: true
