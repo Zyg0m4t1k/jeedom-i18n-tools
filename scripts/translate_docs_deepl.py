@@ -55,29 +55,31 @@ def restore_code_blocks(text: str, blocks):
     return text
 
 def deepl_translate(text: str, target_lang: str) -> str:
-    # DeepL endpoints:
-    # - API Free: https://api-free.deepl.com
-    # - API Pro : https://api.deepl.com
-    #
-    # Important (2026): legacy authentication by sending `auth_key` in the body/query
-    # is deprecated and can return 403. Use the `DeepL-Auth-Key` header instead.
     key = DEEPL_KEY
+
     base_url = (os.environ.get("DEEPL_API_URL") or "").strip()
     if not base_url:
-        # Heuristic: API Free keys usually end with ':fx'
+        # API Free si clé finissant par :fx
         base_url = "https://api-free.deepl.com" if key.endswith(":fx") else "https://api.deepl.com"
 
     url = base_url.rstrip("/") + "/v2/translate"
-    headers = {"DeepL-Auth-Key": key}
+
+    headers = {
+        "Authorization": f"DeepL-Auth-Key {key}"
+    }
 
     payload = {
         "text": text,
         "target_lang": target_lang,
     }
 
-    r = requests.post(url, data=payload, headers=headers, timeout=90)
+    r = requests.post(
+        url,
+        data=payload,
+        headers=headers,
+        timeout=90,
+    )
 
-    # 🔥 DEBUG AMÉLIORÉ
     if r.status_code >= 400:
         print("DeepL endpoint:", url)
         print("DeepL error:", r.status_code)
