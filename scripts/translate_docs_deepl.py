@@ -7,7 +7,9 @@ ROOT = Path(".").resolve()
 INFO = ROOT / "plugin_info" / "info.json"
 DOCS = ROOT / "docs"
 SRC_LANG = os.environ.get("SOURCE_LANG", "fr_FR")
-DEEPL_KEY = os.environ.get("DEEPL_API_KEY")
+
+# 🔥 FIX : strip() pour éviter les espaces invisibles (cause 403)
+DEEPL_KEY = (os.environ.get("DEEPL_API_KEY") or "").strip()
 
 if not DEEPL_KEY:
     raise SystemExit("Missing DEEPL_API_KEY")
@@ -53,17 +55,28 @@ def restore_code_blocks(text: str, blocks):
     return text
 
 def deepl_translate(text: str, target_lang: str) -> str:
-    r = requests.post(
-        "https://api-free.deepl.com/v2/translate",
-        data={"auth_key": DEEPL_KEY, "text": text, "target_lang": target_lang},
-        timeout=90,
-    )
+    url = "https://api-free.deepl.com/v2/translate"
+
+    payload = {
+        "auth_key": DEEPL_KEY,
+        "text": text,
+        "target_lang": target_lang,
+    }
+
+    r = requests.post(url, data=payload, timeout=90)
+
+    # 🔥 DEBUG AMÉLIORÉ
+    if r.status_code >= 400:
+        print("DeepL error:", r.status_code)
+        print("Response:", r.text[:1000])
+
     r.raise_for_status()
     return r.json()["translations"][0]["text"]
 
 for lang in langs:
     if lang == SRC_LANG:
         continue
+
     target = DEEPL_MAP.get(lang, lang.split("_")[0].upper())
     dst_dir = DOCS / lang
     if not dst_dir.exists():
@@ -79,15 +92,12 @@ for lang in langs:
 
         m = MARKER_RE.match(cur)
         if not m:
-            # No marker => manual file => never touch
             continue
 
-        # Remove marker from content for hashing
         cur_wo_marker = MARKER_RE.sub("", cur, count=1)
         cur_out_sha = sha256_text(cur_wo_marker)
 
         marker_out_sha = m.group("outsha")
-        # If out_sha doesn't match marker => user edited manually => skip forever
         if marker_out_sha not in ("TODO", "") and cur_out_sha.lower() != marker_out_sha.lower():
             continue
 
@@ -95,7 +105,6 @@ for lang in langs:
         fr_sha = sha256_text(fr)
 
         marker_src_sha = m.group("srcsha")
-        # If marker has src sha and it's same as current, nothing to do
         if marker_src_sha not in ("TODO", "") and fr_sha.lower() == marker_src_sha.lower():
             continue
 
