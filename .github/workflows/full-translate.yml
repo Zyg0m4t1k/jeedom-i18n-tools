@@ -11,7 +11,6 @@ on:
         type: string
         default: "en_US,de_DE,es_ES,it_IT"
 
-      # Active DeepL uniquement si true. Si le secret n'est pas présent, on skip sans erreur.
       use_deepl:
         type: boolean
         default: false
@@ -53,16 +52,16 @@ jobs:
           fetch-depth: 0
 
       # 2) i18n (JSON Jeedom) -> PR automatique (action Mips) (optionnel)
-      # NOTE: Dans un reusable workflow, 'secrets.*' n'est pas dispo dans les expressions if:.
-      # On fait donc un precheck bash qui met un output exploitable.
-      - name: DeepL precheck
+      # IMPORTANT: dans un reusable workflow, on ne peut PAS utiliser secrets.* dans if:
+      # -> on fait un precheck bash et on conditionne via outputs.
+      - name: DeepL token precheck
         id: deepl_precheck
         if: ${{ inputs.use_deepl }}
         shell: bash
         run: |
           if [ -z "${{ secrets.DEEPL_API_KEY }}" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "DEEPL_API_KEY missing -> skip DeepL step"
+            echo "DEEPL_API_KEY missing -> DeepL step will be skipped"
           else
             echo "enabled=true" >> "$GITHUB_OUTPUT"
             echo "DEEPL_API_KEY present -> DeepL enabled"
@@ -81,8 +80,21 @@ jobs:
         run: echo "DeepL disabled (use_deepl=false or DEEPL_API_KEY missing) -> skipping i18n translation step"
 
       # 3) Sync docs -> PR dans le repo site (secure)
-      - name: Checkout site repo (for docs PR)
+      - name: Site token precheck
+        id: site_precheck
         if: ${{ inputs.sync_site }}
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.SITE_PUSH_TOKEN }}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "SITE_PUSH_TOKEN missing -> site sync will be skipped"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "SITE_PUSH_TOKEN present -> site sync enabled"
+          fi
+
+      - name: Checkout site repo (for docs PR)
+        if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.site_repo }}
@@ -92,15 +104,10 @@ jobs:
           fetch-depth: 0
 
       - name: Copy docs into site workspace
-        if: ${{ inputs.sync_site }}
+        if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         shell: bash
         run: |
           set -e
-
-          if [ -z "${{ secrets.SITE_PUSH_TOKEN }}" ]; then
-            echo "SITE_PUSH_TOKEN missing -> cannot sync docs to site."
-            exit 1
-          fi
 
           if [ ! -d "./docs" ]; then
             echo "No ./docs folder in plugin repo -> nothing to sync."
@@ -114,7 +121,7 @@ jobs:
           rsync -a --delete "./docs/" "site/docs/plugins/${PLUGIN_ID}/"
 
       - name: Create PR on site repo (docs sync)
-        if: ${{ inputs.sync_site }}
+        if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.SITE_PUSH_TOKEN }}
@@ -128,3 +135,7 @@ jobs:
           branch: "bot/docs-${{ github.event.repository.name }}"
           base: ${{ inputs.site_branch }}
           delete-branch: true
+
+      - name: Skip site sync (info)
+        if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled != 'true' }}
+        run: echo "Site sync skipped (sync_site=true but SITE_PUSH_TOKEN missing in this run)"
