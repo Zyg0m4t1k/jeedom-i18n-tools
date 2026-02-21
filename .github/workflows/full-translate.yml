@@ -6,21 +6,30 @@ on:
       source_lang:
         type: string
         default: fr_FR
+
       target_languages:
         type: string
         default: "en_US,de_DE,es_ES,it_IT"
+
+      use_deepl:
+        type: boolean
+        default: false
+
       sync_site:
         type: boolean
         default: true
+
       site_repo:
         type: string
         default: "Zyg0m4t1k/Zyg0m4t1k.github.io"
+
       site_branch:
         type: string
         default: "master"
+
     secrets:
       DEEPL_API_KEY:
-        required: true
+        required: false
       SITE_PUSH_TOKEN:
         required: false
 
@@ -42,13 +51,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 2) i18n (JSON Jeedom) -> PR automatique (action Mips)
+      # 2) i18n (JSON Jeedom) -> PR automatique (action Mips) (optionnel)
       - name: Translate i18n (Jeedom JSON) via DeepL
+        if: ${{ inputs.use_deepl && secrets.DEEPL_API_KEY != '' }}
         uses: Mips2648/plugins-translations@v2
         with:
           deepl_api_key: ${{ secrets.DEEPL_API_KEY }}
           source_language: ${{ inputs.source_lang }}
           target_languages: ${{ inputs.target_languages }}
+
+      - name: Skip DeepL (info)
+        if: ${{ !inputs.use_deepl || secrets.DEEPL_API_KEY == '' }}
+        run: echo "DeepL disabled (use_deepl=false or DEEPL_API_KEY missing) -> skipping i18n translation step"
 
       # 3) Sync docs -> PR dans le repo site (secure)
       - name: Checkout site repo (for docs PR)
