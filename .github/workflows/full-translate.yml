@@ -1,4 +1,4 @@
-name: Full translate (i18n + docs)
+name: Full translate (i18n PR + site docs PR)
 
 on:
   workflow_call:
@@ -8,24 +8,93 @@ on:
         default: fr_FR
       target_languages:
         type: string
-        default: "en_US,de_DE,es_ES"
+        default: "en_US,de_DE,es_ES,it_IT"
+      sync_site:
+        type: boolean
+        default: true
+      site_repo:
+        type: string
+        default: "Zyg0m4t1k/Zyg0m4t1k.github.io"
+      site_branch:
+        type: string
+        default: "master"
     secrets:
       DEEPL_API_KEY:
         required: true
+      SITE_PUSH_TOKEN:
+        required: false
 
 permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: full-translate-${{ github.repository }}
+  cancel-in-progress: true
+
 jobs:
-  translate:
+  run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # 1) Checkout du plugin appelant
+      - name: Checkout plugin repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: i18n JSON (Mips)
+      # 2) i18n (JSON Jeedom) -> PR automatique (action Mips)
+      - name: Translate i18n (Jeedom JSON) via DeepL
         uses: Mips2648/plugins-translations@v2
         with:
           deepl_api_key: ${{ secrets.DEEPL_API_KEY }}
-          target_languages: ${{ inputs.target_languages }}
           source_language: ${{ inputs.source_lang }}
+          target_languages: ${{ inputs.target_languages }}
+
+      # 3) Sync docs -> PR dans le repo site (secure)
+      - name: Checkout site repo (for docs PR)
+        if: ${{ inputs.sync_site }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.site_repo }}
+          ref: ${{ inputs.site_branch }}
+          token: ${{ secrets.SITE_PUSH_TOKEN }}
+          path: site
+          fetch-depth: 0
+
+      - name: Copy docs into site workspace
+        if: ${{ inputs.sync_site }}
+        shell: bash
+        run: |
+          set -e
+
+          if [ -z "${{ secrets.SITE_PUSH_TOKEN }}" ]; then
+            echo "SITE_PUSH_TOKEN missing -> cannot sync docs to site."
+            exit 1
+          fi
+
+          if [ ! -d "./docs" ]; then
+            echo "No ./docs folder in plugin repo -> nothing to sync."
+            exit 0
+          fi
+
+          PLUGIN_ID="${GITHUB_REPOSITORY#*/}"
+          echo "PLUGIN_ID=${PLUGIN_ID}"
+
+          mkdir -p "site/docs/plugins/${PLUGIN_ID}"
+          rsync -a --delete "./docs/" "site/docs/plugins/${PLUGIN_ID}/"
+
+      - name: Create PR on site repo (docs sync)
+        if: ${{ inputs.sync_site }}
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.SITE_PUSH_TOKEN }}
+          path: site
+          commit-message: "docs(${{ github.event.repository.name }}): sync from plugin"
+          title: "docs(${{ github.event.repository.name }}): sync from plugin"
+          body: |
+            Sync automatique des docs depuis le repo plugin `${{ github.repository }}`.
+            - Dossier: `docs/plugins/${{ github.event.repository.name }}/`
+            - Déclencheur: workflow manuel côté plugin
+          branch: "bot/docs-${{ github.event.repository.name }}"
+          base: ${{ inputs.site_branch }}
+          delete-branch: true
