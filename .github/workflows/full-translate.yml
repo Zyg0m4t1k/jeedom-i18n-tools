@@ -11,6 +11,7 @@ on:
         type: string
         default: "en_US,de_DE,es_ES,it_IT"
 
+      # Active DeepL uniquement si true. Si le secret n'est pas présent, on skip sans erreur.
       use_deepl:
         type: boolean
         default: false
@@ -52,8 +53,23 @@ jobs:
           fetch-depth: 0
 
       # 2) i18n (JSON Jeedom) -> PR automatique (action Mips) (optionnel)
+      # NOTE: Dans un reusable workflow, 'secrets.*' n'est pas dispo dans les expressions if:.
+      # On fait donc un precheck bash qui met un output exploitable.
+      - name: DeepL precheck
+        id: deepl_precheck
+        if: ${{ inputs.use_deepl }}
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.DEEPL_API_KEY }}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "DEEPL_API_KEY missing -> skip DeepL step"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "DEEPL_API_KEY present -> DeepL enabled"
+          fi
+
       - name: Translate i18n (Jeedom JSON) via DeepL
-        if: ${{ inputs.use_deepl && secrets.DEEPL_API_KEY != '' }}
+        if: ${{ inputs.use_deepl && steps.deepl_precheck.outputs.enabled == 'true' }}
         uses: Mips2648/plugins-translations@v2
         with:
           deepl_api_key: ${{ secrets.DEEPL_API_KEY }}
@@ -61,7 +77,7 @@ jobs:
           target_languages: ${{ inputs.target_languages }}
 
       - name: Skip DeepL (info)
-        if: ${{ !inputs.use_deepl || secrets.DEEPL_API_KEY == '' }}
+        if: ${{ !inputs.use_deepl || (inputs.use_deepl && steps.deepl_precheck.outputs.enabled != 'true') }}
         run: echo "DeepL disabled (use_deepl=false or DEEPL_API_KEY missing) -> skipping i18n translation step"
 
       # 3) Sync docs -> PR dans le repo site (secure)
