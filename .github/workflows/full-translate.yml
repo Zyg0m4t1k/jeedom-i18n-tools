@@ -1,29 +1,35 @@
-name: Full translate (i18n + site docs + icon sync) — NO PR (push direct)
+name: Full translate (i18n PR + site docs PR)
 
 on:
   workflow_call:
     inputs:
       source_lang:
         type: string
-        default: "fr_FR"
+        default: fr_FR
+
       target_languages:
         type: string
         default: "en_US,de_DE,es_ES,it_IT,pt_PT"
+
       sync_site:
         type: boolean
         default: true
+
       site_repo:
         type: string
         default: "Zyg0m4t1k/Zyg0m4t1k.github.io"
+
       site_branch:
         type: string
         default: "master"
+
     secrets:
       SITE_PUSH_TOKEN:
         required: false
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: full-translate-${{ github.repository }}
@@ -32,44 +38,19 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
-      # 1) Checkout du repo plugin (celui qui appelle ce workflow)
       - name: Checkout plugin repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2) Génère / met à jour les JSON i18n (sans DeepL)
-      - name: Generate/Update i18n (Jeedom JSON)
+      # i18n: Mips génère et ouvre la PR "translations" (sans DeepL)
+      - name: Generate i18n (Mips) + open PR
         uses: Mips2648/plugins-translations@v2
         with:
           source_language: ${{ inputs.source_lang }}
           target_languages: ${{ inputs.target_languages }}
 
-      # 3) Commit & push direct dans la branche courante (ex: beta)
-      - name: Commit & push i18n changes (no PR)
-        shell: bash
-        run: |
-          set -e
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No i18n changes to commit."
-            exit 0
-          fi
-
-          git add -A
-          git commit -m "chore(i18n): update translations"
-
-          BRANCH="${GITHUB_REF_NAME}"
-          echo "Pushing to plugin branch: ${BRANCH}"
-          git push origin "HEAD:${BRANCH}"
-
-      # 4) Vérifie si on peut sync le site (token présent)
       - name: Site token precheck
         id: site_precheck
         if: ${{ inputs.sync_site }}
@@ -83,8 +64,7 @@ jobs:
             echo "SITE_PUSH_TOKEN present -> site sync enabled"
           fi
 
-      # 5) Checkout du repo site dans ./site
-      - name: Checkout site repo
+      - name: Checkout site repo (for docs PR)
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         uses: actions/checkout@v4
         with:
@@ -94,7 +74,6 @@ jobs:
           path: site
           fetch-depth: 0
 
-      # 6) Copie des docs du plugin vers le site
       - name: Copy docs into site workspace
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         shell: bash
@@ -107,12 +86,9 @@ jobs:
           fi
 
           PLUGIN_ID="${GITHUB_REPOSITORY#*/}"
-          echo "PLUGIN_ID=${PLUGIN_ID}"
-
           mkdir -p "site/docs/plugins/${PLUGIN_ID}"
           rsync -a --delete "./docs/" "site/docs/plugins/${PLUGIN_ID}/"
 
-      # 6bis) Copie de l'icône du plugin vers le site (fallback intelligent)
       - name: Copy plugin icon into site (smart fallback)
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         shell: bash
@@ -122,14 +98,10 @@ jobs:
           PLUGIN_ID="${GITHUB_REPOSITORY#*/}"
           ICON_DIR="plugin_info"
           DEST_DIR="site/static/img/plugins"
-
           mkdir -p "${DEST_DIR}"
 
-          # 1️⃣ priorité : <repo>_icon.png
           ICON_SOURCE="${ICON_DIR}/${PLUGIN_ID}_icon.png"
-
           if [ ! -f "${ICON_SOURCE}" ]; then
-            # 2️⃣ autres extensions avec même nom
             for ext in svg webp jpg jpeg; do
               if [ -f "${ICON_DIR}/${PLUGIN_ID}_icon.${ext}" ]; then
                 ICON_SOURCE="${ICON_DIR}/${PLUGIN_ID}_icon.${ext}"
@@ -139,7 +111,6 @@ jobs:
           fi
 
           if [ ! -f "${ICON_SOURCE}" ]; then
-            # 3️⃣ fallback : n'importe quel *_icon.*
             ICON_SOURCE="$(find ${ICON_DIR} -maxdepth 1 -type f -name '*_icon.*' | head -n 1 || true)"
           fi
 
@@ -148,33 +119,19 @@ jobs:
             exit 0
           fi
 
-          ICON_FILENAME="$(basename "${ICON_SOURCE}")"
-          ICON_DEST="${DEST_DIR}/${ICON_FILENAME}"
+          cp -f "${ICON_SOURCE}" "${DEST_DIR}/$(basename "${ICON_SOURCE}")"
 
-          echo "Copying icon ${ICON_SOURCE} -> ${ICON_DEST}"
-          cp -f "${ICON_SOURCE}" "${ICON_DEST}"
-
-      # 7) Commit & push direct dans la branche du site (ex: master)
-      - name: Commit & push site docs/icon sync (no PR)
+      - name: Create PR on site repo (docs sync)
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
-        shell: bash
-        run: |
-          set -e
-          cd site
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No site changes to commit."
-            exit 0
-          fi
-
-          git add -A
-          git commit -m "docs(${{ github.event.repository.name }}): sync from plugin"
-
-          echo "Pushing to site branch: ${{ inputs.site_branch }}"
-          git push origin "HEAD:${{ inputs.site_branch }}"
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.SITE_PUSH_TOKEN }}
+          path: site
+          commit-message: "docs(${{ github.event.repository.name }}): sync from plugin"
+          title: "docs(${{ github.event.repository.name }}): sync from plugin"
+          branch: "bot/docs-${{ github.event.repository.name }}"
+          base: ${{ inputs.site_branch }}
+          delete-branch: true
 
       - name: Skip site sync (info)
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled != 'true' }}
