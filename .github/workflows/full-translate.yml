@@ -1,41 +1,29 @@
-name: Full translate (i18n PR + site docs PR)
+name: Full translate (i18n + site docs + icon sync) — NO PR (push direct)
 
 on:
   workflow_call:
     inputs:
       source_lang:
         type: string
-        default: fr_FR
-
+        default: "fr_FR"
       target_languages:
         type: string
-        default: "en_US,de_DE,es_ES,it_IT"
-
-      use_deepl:
-        type: boolean
-        default: false
-
+        default: "en_US,de_DE,es_ES,it_IT,pt_PT"
       sync_site:
         type: boolean
         default: true
-
       site_repo:
         type: string
         default: "Zyg0m4t1k/Zyg0m4t1k.github.io"
-
       site_branch:
         type: string
         default: "master"
-
     secrets:
-      DEEPL_API_KEY:
-        required: false
       SITE_PUSH_TOKEN:
         required: false
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: full-translate-${{ github.repository }}
@@ -44,42 +32,44 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
-      # 1) Checkout du plugin appelant
+      # 1) Checkout du repo plugin (celui qui appelle ce workflow)
       - name: Checkout plugin repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2) i18n (JSON Jeedom) -> PR automatique (action Mips) (optionnel)
-      # IMPORTANT: dans un reusable workflow, on ne peut PAS utiliser secrets.* dans if:
-      # -> on fait un precheck bash et on conditionne via outputs.
-      - name: DeepL token precheck
-        id: deepl_precheck
-        if: ${{ inputs.use_deepl }}
-        shell: bash
-        run: |
-          if [ -z "${{ secrets.DEEPL_API_KEY }}" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "DEEPL_API_KEY missing -> DeepL step will be skipped"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "DEEPL_API_KEY present -> DeepL enabled"
-          fi
-
-      - name: Translate i18n (Jeedom JSON) via DeepL
-        if: ${{ inputs.use_deepl && steps.deepl_precheck.outputs.enabled == 'true' }}
+      # 2) Génère / met à jour les JSON i18n (sans DeepL)
+      - name: Generate/Update i18n (Jeedom JSON)
         uses: Mips2648/plugins-translations@v2
         with:
-          deepl_api_key: ${{ secrets.DEEPL_API_KEY }}
           source_language: ${{ inputs.source_lang }}
           target_languages: ${{ inputs.target_languages }}
 
-      - name: Skip DeepL (info)
-        if: ${{ !inputs.use_deepl || (inputs.use_deepl && steps.deepl_precheck.outputs.enabled != 'true') }}
-        run: echo "DeepL disabled (use_deepl=false or DEEPL_API_KEY missing) -> skipping i18n translation step"
+      # 3) Commit & push direct dans la branche courante (ex: beta)
+      - name: Commit & push i18n changes (no PR)
+        shell: bash
+        run: |
+          set -e
 
-      # 3) Sync docs -> PR dans le repo site (secure)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No i18n changes to commit."
+            exit 0
+          fi
+
+          git add -A
+          git commit -m "chore(i18n): update translations"
+
+          BRANCH="${GITHUB_REF_NAME}"
+          echo "Pushing to plugin branch: ${BRANCH}"
+          git push origin "HEAD:${BRANCH}"
+
+      # 4) Vérifie si on peut sync le site (token présent)
       - name: Site token precheck
         id: site_precheck
         if: ${{ inputs.sync_site }}
@@ -93,7 +83,8 @@ jobs:
             echo "SITE_PUSH_TOKEN present -> site sync enabled"
           fi
 
-      - name: Checkout site repo (for docs PR)
+      # 5) Checkout du repo site dans ./site
+      - name: Checkout site repo
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         uses: actions/checkout@v4
         with:
@@ -103,6 +94,7 @@ jobs:
           path: site
           fetch-depth: 0
 
+      # 6) Copie des docs du plugin vers le site
       - name: Copy docs into site workspace
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
         shell: bash
@@ -120,21 +112,69 @@ jobs:
           mkdir -p "site/docs/plugins/${PLUGIN_ID}"
           rsync -a --delete "./docs/" "site/docs/plugins/${PLUGIN_ID}/"
 
-      - name: Create PR on site repo (docs sync)
+      # 6bis) Copie de l'icône du plugin vers le site (fallback intelligent)
+      - name: Copy plugin icon into site (smart fallback)
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.SITE_PUSH_TOKEN }}
-          path: site
-          commit-message: "docs(${{ github.event.repository.name }}): sync from plugin"
-          title: "docs(${{ github.event.repository.name }}): sync from plugin"
-          body: |
-            Sync automatique des docs depuis le repo plugin `${{ github.repository }}`.
-            - Dossier: `docs/plugins/${{ github.event.repository.name }}/`
-            - Déclencheur: workflow manuel côté plugin
-          branch: "bot/docs-${{ github.event.repository.name }}"
-          base: ${{ inputs.site_branch }}
-          delete-branch: true
+        shell: bash
+        run: |
+          set -e
+
+          PLUGIN_ID="${GITHUB_REPOSITORY#*/}"
+          ICON_DIR="plugin_info"
+          DEST_DIR="site/static/img/plugins"
+
+          mkdir -p "${DEST_DIR}"
+
+          # 1️⃣ priorité : <repo>_icon.png
+          ICON_SOURCE="${ICON_DIR}/${PLUGIN_ID}_icon.png"
+
+          if [ ! -f "${ICON_SOURCE}" ]; then
+            # 2️⃣ autres extensions avec même nom
+            for ext in svg webp jpg jpeg; do
+              if [ -f "${ICON_DIR}/${PLUGIN_ID}_icon.${ext}" ]; then
+                ICON_SOURCE="${ICON_DIR}/${PLUGIN_ID}_icon.${ext}"
+                break
+              fi
+            done
+          fi
+
+          if [ ! -f "${ICON_SOURCE}" ]; then
+            # 3️⃣ fallback : n'importe quel *_icon.*
+            ICON_SOURCE="$(find ${ICON_DIR} -maxdepth 1 -type f -name '*_icon.*' | head -n 1 || true)"
+          fi
+
+          if [ -z "${ICON_SOURCE}" ] || [ ! -f "${ICON_SOURCE}" ]; then
+            echo "No icon found in ${ICON_DIR} -> skipping"
+            exit 0
+          fi
+
+          ICON_FILENAME="$(basename "${ICON_SOURCE}")"
+          ICON_DEST="${DEST_DIR}/${ICON_FILENAME}"
+
+          echo "Copying icon ${ICON_SOURCE} -> ${ICON_DEST}"
+          cp -f "${ICON_SOURCE}" "${ICON_DEST}"
+
+      # 7) Commit & push direct dans la branche du site (ex: master)
+      - name: Commit & push site docs/icon sync (no PR)
+        if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled == 'true' }}
+        shell: bash
+        run: |
+          set -e
+          cd site
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No site changes to commit."
+            exit 0
+          fi
+
+          git add -A
+          git commit -m "docs(${{ github.event.repository.name }}): sync from plugin"
+
+          echo "Pushing to site branch: ${{ inputs.site_branch }}"
+          git push origin "HEAD:${{ inputs.site_branch }}"
 
       - name: Skip site sync (info)
         if: ${{ inputs.sync_site && steps.site_precheck.outputs.enabled != 'true' }}
